@@ -1,4 +1,5 @@
 
+
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 
@@ -77,6 +78,7 @@ function initializeDatabase() {
             CREATE TABLE IF NOT EXISTS groups (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
+                icon TEXT, -- Added for group icons
                 owner_id INTEGER,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (owner_id) REFERENCES users(id)
@@ -116,9 +118,13 @@ function initializeDatabase() {
                 filesize INTEGER,
                 user_id INTEGER,
                 channel_id INTEGER,
+                group_id INTEGER, -- Added for group file uploads
+                dm_receiver_id INTEGER, -- Added for DM file uploads
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id),
-                FOREIGN KEY (channel_id) REFERENCES channels(id)
+                FOREIGN KEY (channel_id) REFERENCES channels(id),
+                FOREIGN KEY (group_id) REFERENCES groups(id),
+                FOREIGN KEY (dm_receiver_id) REFERENCES users(id)
             )
         `);
 
@@ -171,10 +177,10 @@ function initializeDatabase() {
 const userDB = {
     create: (username, email, hashedPassword) => {
         return new Promise((resolve, reject) => {
-            const sql = 'INSERT INTO users (username, email, password) VALUES (?, ?, ?)';
-            db.run(sql, [username, email, hashedPassword], function(err) {
+            const sql = 'INSERT INTO users (username, email, password, avatar) VALUES (?, ?, ?, ?)';
+            db.run(sql, [username, email, hashedPassword, username.charAt(0).toUpperCase()], function(err) {
                 if (err) reject(err);
-                else resolve({ id: this.lastID, username, email });
+                else resolve({ id: this.lastID, username, email, avatar: username.charAt(0).toUpperCase() });
             });
         });
     },
@@ -203,6 +209,26 @@ const userDB = {
         return new Promise((resolve, reject) => {
             const sql = 'UPDATE users SET status = ? WHERE id = ?';
             db.run(sql, [status, id], (err) => {
+                if (err) reject(err);
+                else resolve();
+            });
+        });
+    },
+
+    updateProfile: (id, username, avatar) => {
+        return new Promise((resolve, reject) => {
+            const sql = 'UPDATE users SET username = ?, avatar = ? WHERE id = ?';
+            db.run(sql, [username, avatar, id], (err) => {
+                if (err) reject(err);
+                else resolve();
+            });
+        });
+    },
+
+    updateAvatar: (id, avatarPath) => {
+        return new Promise((resolve, reject) => {
+            const sql = 'UPDATE users SET avatar = ? WHERE id = ?';
+            db.run(sql, [avatarPath, id], (err) => {
                 if (err) reject(err);
                 else resolve();
             });
@@ -295,10 +321,41 @@ const dmDB = {
 const groupDB = {
     create: (name, ownerId) => {
         return new Promise((resolve, reject) => {
-            const sql = 'INSERT INTO groups (name, owner_id) VALUES (?, ?)';
-            db.run(sql, [name, ownerId], function(err) {
+            const icon = name.charAt(0).toUpperCase(); // Default icon
+            const sql = 'INSERT INTO groups (name, icon, owner_id) VALUES (?, ?, ?)';
+            db.run(sql, [name, icon, ownerId], function(err) {
                 if (err) reject(err);
-                else resolve({ id: this.lastID, name, ownerId });
+                else resolve({ id: this.lastID, name, icon, ownerId });
+            });
+        });
+    },
+
+    update: (groupId, name, icon) => {
+        return new Promise((resolve, reject) => {
+            const sql = 'UPDATE groups SET name = ?, icon = ? WHERE id = ?';
+            db.run(sql, [name, icon, groupId], (err) => {
+                if (err) reject(err);
+                else resolve();
+            });
+        });
+    },
+
+    delete: (groupId) => {
+        return new Promise((resolve, reject) => {
+            db.serialize(() => {
+                db.run('DELETE FROM group_messages WHERE group_id = ?', [groupId], (err) => {
+                    if (err) return reject(err);
+                });
+                db.run('DELETE FROM group_members WHERE group_id = ?', [groupId], (err) => {
+                    if (err) return reject(err);
+                });
+                db.run('DELETE FROM file_uploads WHERE group_id = ?', [groupId], (err) => { // Delete associated files
+                    if (err) return reject(err);
+                });
+                db.run('DELETE FROM groups WHERE id = ?', [groupId], (err) => {
+                    if (err) reject(err);
+                    else resolve();
+                });
             });
         });
     },
@@ -313,6 +370,16 @@ const groupDB = {
         });
     },
 
+    getGroup: (groupId) => {
+        return new Promise((resolve, reject) => {
+            const sql = 'SELECT * FROM groups WHERE id = ?';
+            db.get(sql, [groupId], (err, row) => {
+                if (err) reject(err);
+                else resolve(row);
+            });
+        });
+    },
+
     getUserGroups: (userId) => {
         return new Promise((resolve, reject) => {
             const sql = `
@@ -323,6 +390,21 @@ const groupDB = {
                 ORDER BY g.created_at DESC
             `;
             db.all(sql, [userId], (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows);
+            });
+        });
+    },
+
+    getMembers: (groupId) => {
+        return new Promise((resolve, reject) => {
+            const sql = `
+                SELECT u.id, u.username, u.avatar, u.status
+                FROM users u
+                JOIN group_members gm ON u.id = gm.user_id
+                WHERE gm.group_id = ?
+            `;
+            db.all(sql, [groupId], (err, rows) => {
                 if (err) reject(err);
                 else resolve(rows);
             });
@@ -359,10 +441,10 @@ const groupDB = {
 
 // File operations
 const fileDB = {
-    create: (filename, filepath, filetype, filesize, userId, channelId) => {
+    create: (filename, filepath, filetype, filesize, userId, channelId = null, groupId = null, dmReceiverId = null) => {
         return new Promise((resolve, reject) => {
-            const sql = 'INSERT INTO file_uploads (filename, filepath, filetype, filesize, user_id, channel_id) VALUES (?, ?, ?, ?, ?, ?)';
-            db.run(sql, [filename, filepath, filetype, filesize, userId, channelId], function(err) {
+            const sql = 'INSERT INTO file_uploads (filename, filepath, filetype, filesize, user_id, channel_id, group_id, dm_receiver_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
+            db.run(sql, [filename, filepath, filetype, filesize, userId, channelId, groupId, dmReceiverId], function(err) {
                 if (err) reject(err);
                 else resolve({ id: this.lastID, filename, filepath });
             });

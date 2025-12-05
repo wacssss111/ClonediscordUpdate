@@ -3,6 +3,7 @@
   "description": "A fully functional Discord clone with authentication, messaging, voice/video calls, screen sharing, and camera support.",
   "requestFramePermissions": [
     "camera",
-    "microphone"
+    "microphone",
+    "geolocation"
   ]
 }

@@ -78,23 +78,23 @@ async function handleSubmit(e) {
     // Validation
     if (!isLoginMode) {
         if (!username || username.trim().length < 3) {
-            showError('Username must be at least 3 characters long');
+            showError('Имя пользователя должно быть не менее 3 символов');
             return;
         }
         
         if (password !== confirmPassword) {
-            showError('Passwords do not match');
+            showError('Пароли не совпадают');
             return;
         }
     }
     
     if (!email || !validateEmail(email)) {
-        showError('Please enter a valid email address');
+        showError('Пожалуйста, введите действительный адрес электронной почты');
         return;
     }
     
     if (!password || password.length < 6) {
-        showError('Password must be at least 6 characters long');
+        showError('Пароль должен быть не менее 6 символов');
         return;
     }
     
@@ -118,7 +118,7 @@ async function login(email, password) {
         const data = await response.json();
         
         if (!response.ok) {
-            showError(data.error || 'Login failed');
+            showError(data.error || 'Ошибка входа');
             return;
         }
         
@@ -126,7 +126,7 @@ async function login(email, password) {
         localStorage.setItem('token', data.token);
         localStorage.setItem('currentUser', JSON.stringify(data.user));
         
-        showSuccess('Login successful! Redirecting...');
+        showSuccess('Вход выполнен успешно! Перенаправление...');
         
         setTimeout(() => {
             window.location.href = 'index.html';
@@ -134,7 +134,7 @@ async function login(email, password) {
         
     } catch (error) {
         console.error('Login error:', error);
-        showError('Network error. Please try again.');
+        showError('Ошибка сети. Пожалуйста, попробуйте еще раз.');
     }
 }
 
@@ -151,7 +151,7 @@ async function register(username, email, password) {
         const data = await response.json();
         
         if (!response.ok) {
-            showError(data.error || 'Registration failed');
+            showError(data.error || 'Ошибка регистрации');
             return;
         }
         
@@ -159,7 +159,7 @@ async function register(username, email, password) {
         localStorage.setItem('token', data.token);
         localStorage.setItem('currentUser', JSON.stringify(data.user));
         
-        showSuccess('Registration successful! Redirecting...');
+        showSuccess('Регистрация успешна! Перенаправление...');
         
         setTimeout(() => {
             window.location.href = 'index.html';
@@ -167,7 +167,7 @@ async function register(username, email, password) {
         
     } catch (error) {
         console.error('Registration error:', error);
-        showError('Network error. Please try again.');
+        showError('Ошибка сети. Пожалуйста, попробуйте еще раз.');
     }
 }
 
