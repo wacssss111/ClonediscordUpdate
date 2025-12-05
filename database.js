@@ -379,6 +379,16 @@ const groupDB = {
             });
         });
     },
+    
+    getGroupCountByOwner: (ownerId) => {
+        return new Promise((resolve, reject) => {
+            const sql = 'SELECT COUNT(*) as count FROM groups WHERE owner_id = ?';
+            db.get(sql, [ownerId], (err, row) => {
+                if (err) reject(err);
+                else resolve(row.count);
+            });
+        });
+    },
 
     getUserGroups: (userId) => {
         return new Promise((resolve, reject) => {

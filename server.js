@@ -1,5 +1,4 @@
 
-
 const express = require('express');
 const http = require('http');
 const socketIO = require('socket.io');
@@ -10,7 +9,7 @@ const multer = require('multer');
 const cors = require('cors');
 const fs = require('fs');
 
-const { initializeDatabase, userDB, messageDB, dmDB, groupDB, fileDB, reactionDB, friendDB, serverDB } = require('./database');
+const { initializeDatabase, userDB, messageDB, dmDB, groupDB, fileDB, reactionDB, friendDB, serverDB, db } = require('./database'); // Added db export
 
 const app = express();
 const server = http.createServer(app);
@@ -21,8 +20,19 @@ const io = socketIO(server, {
     }
 });
 
-const PORT = process.env.PORT || 3001; // Changed default port to 3001
+const PORT = process.env.PORT || 3002; // Changed default port to 3002
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+
+// In-memory store for connected users' sockets and their user IDs
+const users = new Map(); // socket.id -> { id, username, avatar, socket }
+
+// Map to store active calls and their start times for system messages
+const activeCalls = new Map(); // key: dm_user_id (for DM), group_id (for group), or channel_id (for server voice) -> { startTime, type, participants: Map<socketId, {id, username, avatar}> }
+
+// Bot user info (must match script.js)
+const BOT_ID = -1; // Unique ID for the bot
+const BOT_USERNAME = 'Bot2'; // Bot's username
+const BOT_AVATAR_INITIAL = 'B'; // Bot's default avatar initial
 
 // Middleware
 app.use(cors());
@@ -83,12 +93,12 @@ function authenticateToken(req, res, next) {
     const token = authHeader && authHeader.split(' ')[1];
     
     if (!token) {
-        return res.status(401).json({ error: 'Access denied' });
+        return res.status(401).json({ error: 'Доступ запрещен. Требуется токен авторизации.' });
     }
     
     jwt.verify(token, JWT_SECRET, (err, user) => {
         if (err) {
-            return res.status(403).json({ error: 'Invalid token' });
+            return res.status(403).json({ error: 'Недействительный токен.' });
         }
         req.user = user;
         next();
@@ -306,7 +316,8 @@ app.get('/api/messages/:channelId', authenticateToken, async (req, res) => {
     try {
         const messages = await messageDB.getByChannel(req.params.channelId);
         res.json(messages);
-    } catch (error) {
+    }
+    catch (error) {
         res.status(500).json({ error: 'Не удалось получить сообщения' });
     }
 });
@@ -314,6 +325,10 @@ app.get('/api/messages/:channelId', authenticateToken, async (req, res) => {
 // Get direct messages
 app.get('/api/dm/:userId', authenticateToken, async (req, res) => {
     try {
+        // Special handling for Bot2, as its messages are not persisted in DB currently
+        if (parseInt(req.params.userId) === BOT_ID) { 
+            return res.json([]); 
+        }
         const messages = await dmDB.getConversation(req.user.id, req.params.userId);
         res.json(messages);
     } catch (error) {
@@ -326,6 +341,12 @@ app.post('/api/groups', authenticateToken, async (req, res) => {
     try {
         const { name, members } = req.body; // members is array of userIds
         if (!name) return res.status(400).json({error: 'Имя обязательно'});
+
+        // Check group limit
+        const userGroupCount = await groupDB.getGroupCountByOwner(req.user.id);
+        if (userGroupCount >= 10) { // Max 10 groups per user
+            return res.status(400).json({ error: `Вы не можете создать более ${10} групп.` });
+        }
 
         const group = await groupDB.create(name, req.user.id);
         
@@ -341,8 +362,19 @@ app.post('/api/groups', authenticateToken, async (req, res) => {
 
         res.json(group);
     } catch (error) {
-        console.error('Group create error:', error);
-        res.status(500).json({error: 'Не удалось создать группу'});
+        console.error('Error creating group:', error);
+        res.status(500).json({ error: 'Не удалось создать группу' });
+    }
+});
+
+// Get group count by owner
+app.get('/api/groups/count', authenticateToken, async (req, res) => {
+    try {
+        const count = await groupDB.getGroupCountByOwner(req.user.id);
+        res.json({ count });
+    } catch (error) {
+        console.error('Error getting group count:', error);
+        res.status(500).json({ error: 'Не удалось получить количество групп' });
     }
 });
 
@@ -350,19 +382,16 @@ app.put('/api/groups/:groupId', authenticateToken, async (req, res) => {
     try {
         const { groupId } = req.params;
         const { name, icon } = req.body;
-
+        
         const group = await groupDB.getGroup(groupId);
-        if (!group) {
-            return res.status(404).json({ error: 'Группа не найдена' });
-        }
-        if (group.owner_id !== req.user.id) {
-            return res.status(403).json({ error: 'У вас нет прав для редактирования этой группы' });
+        if (!group || group.owner_id !== req.user.id) {
+            return res.status(43).json({ error: 'Доступ запрещен' });
         }
 
         await groupDB.update(groupId, name, icon);
         res.sendStatus(200);
     } catch (error) {
-        console.error('Group update error:', error);
+        console.error('Error updating group:', error);
         res.status(500).json({ error: 'Не удалось обновить группу' });
     }
 });
@@ -370,39 +399,26 @@ app.put('/api/groups/:groupId', authenticateToken, async (req, res) => {
 app.delete('/api/groups/:groupId', authenticateToken, async (req, res) => {
     try {
         const { groupId } = req.params;
+        
         const group = await groupDB.getGroup(groupId);
-        if (!group) {
-            return res.status(404).json({ error: 'Группа не найдена' });
-        }
-        if (group.owner_id !== req.user.id) {
-            return res.status(403).json({ error: 'У вас нет прав для удаления этой группы' });
+        if (!group || group.owner_id !== req.user.id) {
+            return res.status(403).json({ error: 'Доступ запрещен' });
         }
 
         await groupDB.delete(groupId);
         res.sendStatus(200);
     } catch (error) {
-        console.error('Group delete error:', error);
+        console.error('Error deleting group:', error);
         res.status(500).json({ error: 'Не удалось удалить группу' });
     }
 });
-
 
 app.get('/api/groups', authenticateToken, async (req, res) => {
     try {
         const groups = await groupDB.getUserGroups(req.user.id);
         res.json(groups);
-    } catch(error) {
-        console.error('Get groups error', error);
-        res.status(500).json({error: 'Не удалось получить группы'});
-    }
-});
-
-app.get('/api/groups/:groupId/messages', authenticateToken, async (req, res) => {
-    try {
-        const messages = await groupDB.getMessages(req.params.groupId);
-        res.json(messages);
-    } catch(error) {
-        res.status(500).json({error: 'Не удалось получить сообщения группы'});
+    } catch (error) {
+        res.status(500).json({ error: 'Не удалось получить группы' });
     }
 });
 
@@ -411,118 +427,71 @@ app.get('/api/groups/:groupId/members', authenticateToken, async (req, res) => {
         const members = await groupDB.getMembers(req.params.groupId);
         res.json(members);
     } catch (error) {
-        console.error('Error fetching group members:', error);
         res.status(500).json({ error: 'Не удалось получить участников группы' });
     }
 });
 
-
-// Server routes
-app.post('/api/servers', authenticateToken, async (req, res) => {
+app.get('/api/groups/:groupId/messages', authenticateToken, async (req, res) => {
     try {
-        const { name } = req.body;
-        
-        if (!name || name.trim().length < 2) {
-            return res.status(400).json({ error: 'Имя сервера должно быть не менее 2 символов' });
-        }
-        
-        const server = await serverDB.create(name.trim(), req.user.id);
-        await serverDB.addMember(server.id, req.user.id);
-        
-        res.json(server);
+        const messages = await groupDB.getMessages(req.params.groupId);
+        res.json(messages);
     } catch (error) {
-        console.error('Create server error:', error);
-        res.status(500).json({ error: 'Не удалось создать сервер' });
+        res.status(500).json({ error: 'Не удалось получить сообщения группы' });
     }
 });
 
-app.get('/api/servers', authenticateToken, async (req, res) => {
-    try {
-        const servers = await serverDB.getUserServers(req.user.id);
-        res.json(servers);
-    } catch (error) {
-        res.status(500).json({ error: 'Не удалось получить серверы' });
-    }
-});
 
-app.get('/api/servers/:serverId/members', authenticateToken, async (req, res) => {
-    try {
-        const members = await serverDB.getMembers(req.params.serverId);
-        res.json(members);
-    } catch (error) {
-        res.status(500).json({ error: 'Не удалось получить участников сервера' });
-    }
-});
-
-app.get('/api/friends', authenticateToken, async (req, res) => {
-    try {
-        const friends = await friendDB.getFriends(req.user.id);
-        res.json(friends);
-    } catch (error) {
-        console.error('Get friends error:', error);
-        res.status(500).json({ error: 'Не удалось получить друзей' });
-    }
-});
-
-app.get('/api/friends/pending', authenticateToken, async (req, res) => {
-    try {
-        const requests = await friendDB.getPendingRequests(req.user.id);
-        res.json(requests);
-    } catch (error) {
-        console.error('Get pending requests error:', error);
-        res.status(500).json({ error: 'Не удалось получить ожидающие запросы' });
-    }
-});
-
-// Friend request routes
+// Friend routes
 app.post('/api/friends/request', authenticateToken, async (req, res) => {
     try {
         const { friendId } = req.body;
-
+        if (!friendId) {
+            return res.status(400).json({ error: 'ID друга обязателен.' });
+        }
         if (parseInt(friendId) === req.user.id) {
-            return res.status(400).json({ error: 'Вы не можете отправить запрос в друзья самому себе.' });
+             return res.status(400).json({ error: 'Вы не можете отправить запрос в друзья самому себе.' });
         }
 
-        // Check if already friends
-        const isFriend = await friendDB.checkFriendship(req.user.id, friendId);
-        if (isFriend) {
-            return res.status(409).json({ error: 'Вы уже друзья.' });
-        }
-
-        // Check if request already sent by current user
-        const existingSentRequest = await new Promise((resolve, reject) => {
-            db.get('SELECT * FROM friends WHERE user_id = ? AND friend_id = ? AND status = "pending"', [req.user.id, friendId], (err, row) => {
+        const existingFriendship = await new Promise((resolve, reject) => {
+            db.get('SELECT status FROM friends WHERE user_id = ? AND friend_id = ?', [req.user.id, friendId], (err, row) => {
                 if (err) reject(err);
                 else resolve(row);
             });
         });
-        if (existingSentRequest) {
-            return res.status(409).json({ error: 'Вы уже отправили запрос этому пользователю.' });
-        }
 
-        // Check for incoming request from the target user
-        const existingIncomingRequest = await new Promise((resolve, reject) => {
-            db.get('SELECT * FROM friends WHERE user_id = ? AND friend_id = ? AND status = "pending"', [friendId, req.user.id], (err, row) => {
-                if (err) reject(err);
-                else resolve(row);
-            });
-        });
-        if (existingIncomingRequest) {
-            return res.status(409).json({ error: 'Этот пользователь уже отправил вам запрос в друзья.' });
-        }
-        
-        const result = await friendDB.sendRequest(req.user.id, friendId);
-
-        if (result.changes > 0) {
-            const receiverSocket = Array.from(users.values()).find(u => u.id === friendId);
-            if (receiverSocket) {
-                io.to(`user-${friendId}`).emit('new-friend-request');
+        if (existingFriendship) {
+            if (existingFriendship.status === 'pending') {
+                return res.status(400).json({ error: 'Запрос в друзья уже отправлен.' });
+            } else if (existingFriendship.status === 'accepted') {
+                return res.status(400).json({ error: 'Вы уже друзья с этим пользователем.' });
             }
         }
+        
+        // Check if there's a pending request from the other user
+        const reverseRequest = await new Promise((resolve, reject) => {
+            db.get('SELECT status FROM friends WHERE user_id = ? AND friend_id = ?', [friendId, req.user.id], (err, row) => {
+                if (err) reject(err);
+                else resolve(row);
+            });
+        });
 
-        res.sendStatus(200);
+        if (reverseRequest && reverseRequest.status === 'pending') {
+            return res.status(400).json({ error: 'Этот пользователь уже отправил вам запрос в друзья. Примите его во вкладке "Ожидают".' });
+        }
+
+        const result = await friendDB.sendRequest(req.user.id, friendId);
+        if (result.changes > 0) {
+            // Notify the friend about the new request
+            const friendSocket = Array.from(users.values()).find(u => u.id === parseInt(friendId));
+            if (friendSocket) {
+                io.to(friendSocket.socket.id).emit('new-friend-request');
+            }
+            res.status(200).json({ message: 'Запрос в друзья отправлен.' });
+        } else {
+            res.status(400).json({ error: 'Пользователь не найден или уже является другом' });
+        }
     } catch (error) {
-        console.error('Friend request error:', error);
+        console.error('Error sending friend request:', error);
         res.status(500).json({ error: 'Не удалось отправить запрос в друзья' });
     }
 });
@@ -531,10 +500,14 @@ app.post('/api/friends/accept', authenticateToken, async (req, res) => {
     try {
         const { friendId } = req.body;
         await friendDB.acceptRequest(req.user.id, friendId);
+        // Notify both users that they are now friends
+        const friendSocket = Array.from(users.values()).find(u => u.id === parseInt(friendId));
+        if (friendSocket) {
+            io.to(friendSocket.socket.id).emit('friend-accepted', { userId: req.user.id });
+        }
         res.sendStatus(200);
     } catch (error) {
-        console.error('Accept friend request error:', error);
-        res.status(500).json({ error: 'Не удалось принять запрос в друзья' });
+        res.status(500).json({ error: 'Не удалось принять запрос' });
     }
 });
 
@@ -544,483 +517,728 @@ app.post('/api/friends/reject', authenticateToken, async (req, res) => {
         await friendDB.rejectRequest(req.user.id, friendId);
         res.sendStatus(200);
     } catch (error) {
-        console.error('Reject friend request error:', error);
-        res.status(500).json({ error: 'Не удалось отклонить запрос в друзья' });
+        res.status(500).json({ error: 'Не удалось отклонить запрос' });
     }
 });
 
 app.delete('/api/friends/:friendId', authenticateToken, async (req, res) => {
     try {
-        await friendDB.removeFriend(req.user.id, req.params.friendId);
+        const { friendId } = req.params;
+        await friendDB.removeFriend(req.user.id, friendId);
         res.sendStatus(200);
     } catch (error) {
-        console.error('Remove friend error:', error);
         res.status(500).json({ error: 'Не удалось удалить друга' });
     }
 });
 
-// Store connected users
-const users = new Map(); // socketId -> { id, username, email, avatar, status, socketId }
-const rooms = new Map(); // roomName -> Set<socketId>
-
-// Socket.IO connection handling
-io.use((socket, next) => {
-    const token = socket.handshake.auth.token;
-    if (!token) {
-        return next(new Error('Authentication error'));
+app.get('/api/friends', authenticateToken, async (req, res) => {
+    try {
+        const friends = await friendDB.getFriends(req.user.id);
+        res.json(friends);
+    } catch (error) {
+        res.status(500).json({ error: 'Не удалось получить друзей' });
     }
-    
-    jwt.verify(token, JWT_SECRET, (err, decoded) => {
-        if (err) return next(new Error('Authentication error'));
-        socket.userId = decoded.id;
-        socket.userEmail = decoded.email;
-        next();
-    });
 });
 
-io.on('connection', async (socket) => {
-    console.log('User connected:', socket.userId);
-    
+app.get('/api/friends/pending', authenticateToken, async (req, res) => {
     try {
-        const user = await userDB.findById(socket.userId);
-        
-        users.set(socket.id, {
-            ...user,
-            socketId: socket.id
-        });
-        
-        // Update user status
-        await userDB.updateStatus(socket.userId, 'Online');
-        
-        // Join user to their own room for notifications
-        socket.join(`user-${socket.userId}`);
-
-        // Join all groups the user is a member of
-        const userGroups = await groupDB.getUserGroups(socket.userId);
-        userGroups.forEach(g => {
-            socket.join(`group-${g.id}`);
-        });
-        
-        io.emit('user-list-update', Array.from(users.values()));
+        const requests = await friendDB.getPendingRequests(req.user.id);
+        res.json(requests);
     } catch (error) {
-        console.error('Error loading user:', error);
+        res.status(500).json({ error: 'Не удалось получить запросы' });
     }
+});
 
-    // Handle ping for call quality
-    socket.on('ping', () => {
-        socket.emit('pong', Date.now() - socket.handshake.time);
-    });
+// Server routes (basic)
+app.post('/api/servers', authenticateToken, async (req, res) => {
+    try {
+        const { name } = req.body;
+        const server = await serverDB.create(name, req.user.id);
+        await serverDB.addMember(server.id, req.user.id); // Add owner as member
+        res.json(server);
+    } catch (error) {
+        res.status(500).json({ error: 'Не удалось создать сервер' });
+    }
+});
 
-    // User sends message
-    socket.on('send-message', async (messageData) => {
+app.get('/api/servers', authenticateToken, async (req, res) => {
+    try {
+        const userServers = await serverDB.getUserServers(req.user.id);
+        res.json(userServers);
+    } catch (error) {
+        res.status(500).json({ error: 'Не удалось получить серверы' });
+    }
+});
+
+
+// Socket.IO Logic
+io.use((socket, next) => {
+    const token = socket.handshake.auth.token;
+    if (token) {
+        jwt.verify(token, JWT_SECRET, (err, user) => {
+            if (err) {
+                return next(new Error('Authentication error'));
+            }
+            socket.user = user;
+            next();
+        });
+    } else {
+        next(new Error('Authentication error'));
+    }
+}).on('connection', (socket) => {
+    console.log('User connected:', socket.user.username, `(${socket.user.id})`);
+    
+    // Store user socket
+    users.set(socket.id, { id: socket.user.id, username: socket.user.username, avatar: socket.user.avatar, socket: socket });
+
+    // Update user status to online
+    userDB.updateStatus(socket.user.id, 'Online');
+    
+    // Notify all clients about updated user list
+    io.emit('user-list-update', Array.from(users.values()).map(u => ({ id: u.id, username: u.username, status: 'Online' })));
+
+
+    socket.on('send-message', async (data) => {
+        const { channelId, message } = data;
+        if (!channelId || !message || !message.text) return;
+
         try {
-            const { channelId, message } = messageData;
+            const savedMessage = await messageDB.create(message.text, socket.user.id, channelId);
             
-            // Get user info
-            const user = users.get(socket.id); // Get current user from map
-            
-            // Save to database
-            const savedMessage = await messageDB.create(
-                message.text,
-                socket.userId,
-                channelId
-            );
-            
-            // Broadcast message with full user info
-            const broadcastMessage = {
-                id: savedMessage.id,
-                author: user.username,
-                avatar: user.avatar,
-                text: message.text,
-                timestamp: new Date(), // Client will format this
-                file: message.file // Include file info if present
-            };
-            
-            io.to(`channel-${channelId}`).emit('new-message', {
-                channelId,
-                message: broadcastMessage
+            // If file is included, update its channel_id
+            if (message.file && message.file.id) { // Assuming file.id is passed if file was uploaded prior
+                // This part needs to be integrated. Current upload only creates file record.
+                // A better flow: client uploads, gets file URL, then sends message with file URL.
+                // For now, if message contains file, assume it's already in DB.
+            }
+
+            io.emit('new-message', {
+                channelId: channelId,
+                message: {
+                    id: savedMessage.id,
+                    author: socket.user.username,
+                    avatar: socket.user.avatar,
+                    text: savedMessage.content,
+                    timestamp: savedMessage.created_at,
+                    file: message.file // Pass file info with message
+                }
             });
         } catch (error) {
-            console.error('Message error:', error);
+            console.error('Error saving message:', error);
         }
     });
 
-    // Group Message
-    socket.on('send-group-message', async (data) => {
-        try {
-            const { groupId, message } = data;
-            const sender = users.get(socket.id);
-
-            const saved = await groupDB.createMessage(message.text, groupId, socket.userId);
-            
-            const payload = {
-                id: saved.id,
-                author: sender.username,
-                avatar: sender.avatar,
-                text: message.text,
-                timestamp: new Date(),
-                file: message.file // Include file info if present
-            };
-
-            io.to(`group-${groupId}`).emit('new-group-message', {
-                groupId,
-                message: payload
-            });
-
-        } catch (e) {
-            console.error("Group message error", e);
-        }
-    });
-
-    // Join Group Voice
-    socket.on('join-group-voice', (data) => {
-        const { groupId } = data;
-        const roomName = `group-voice-${groupId}`;
+    socket.on('send-dm', async (data) => {
+        const { receiverId, message } = data;
+        if (!receiverId || !message || !message.text) return;
         
-        socket.join(roomName);
-        if (!rooms.has(roomName)) rooms.set(roomName, new Set());
-        rooms.get(roomName).add(socket.id);
+        try {
+            let savedMessage;
 
-        socket.to(roomName).emit('user-joined-voice', {
-            socketId: socket.id,
-            userId: socket.userId, // Pass userId for easier lookup
-            username: users.get(socket.id)?.username || 'Unknown',
-            avatar: users.get(socket.id)?.avatar || 'U'
-        });
+            // Handle bot messages where senderId is BOT_ID
+            if (data.senderId === BOT_ID) {
+                // If bot is sending, receiverId is the current user.
+                // We don't save bot messages to DB for now.
+                savedMessage = {
+                    id: `bot-msg-${Date.now()}`,
+                    content: message.text,
+                    sender_id: BOT_ID,
+                    receiver_id: receiverId,
+                    created_at: message.timestamp
+                };
+            } else {
+                // Regular DM
+                savedMessage = await dmDB.create(message.text, socket.user.id, receiverId);
+                // Attach file if present
+                if (message.file && message.file.id) {
+                    // Update file record to link to this DM
+                }
+            }
 
-        // Send existing users in room
-        const existingIds = Array.from(rooms.get(roomName)).filter(id => id !== socket.id);
-        const existingUsers = existingIds.map(id => users.get(id) || {id: users.get(id)?.id, username: 'Unknown', avatar: 'U', socketId: id});
-        socket.emit('existing-voice-users', existingUsers);
-    });
-
-    // Leave Group Voice
-    socket.on('leave-group-voice', (data) => {
-        const { groupId } = data;
-        const roomName = `group-voice-${groupId}`;
-        socket.leave(roomName);
-        if (rooms.has(roomName)) {
-            rooms.get(roomName).delete(socket.id);
-            io.to(roomName).emit('user-left-voice', socket.id);
-        }
-    });
-
-    // Initiate group call (notification to all group members)
-    socket.on('initiate-group-call', async (data) => {
-        const { groupId, callerInfo, type } = data;
-        console.log(`Group call initiated by ${callerInfo.username} for group ${groupId}`);
-
-        const members = await groupDB.getMembers(groupId); // Get all members from DB
-        members.forEach(member => {
-            // Don't send notification to the caller themselves
-            if (member.id !== callerInfo.id) {
-                io.to(`user-${member.id}`).emit('incoming-group-call', {
-                    groupId,
-                    callerInfo: {
-                        id: callerInfo.id,
-                        username: callerInfo.username,
-                        socketId: callerInfo.socketId,
-                        avatar: callerInfo.avatar
-                    },
-                    type: type
+            const receiverSocket = Array.from(users.values()).find(u => u.id === parseInt(receiverId));
+            const senderSocket = Array.from(users.values()).find(u => u.id === socket.user.id);
+            
+            // Send to receiver
+            if (receiverSocket) {
+                io.to(receiverSocket.socket.id).emit('new-dm', {
+                    senderId: savedMessage.sender_id,
+                    receiverId: savedMessage.receiver_id,
+                    message: {
+                        id: savedMessage.id,
+                        author: data.senderId === BOT_ID ? BOT_USERNAME : socket.user.username,
+                        avatar: data.senderId === BOT_ID ? BOT_AVATAR_INITIAL : socket.user.avatar,
+                        text: savedMessage.content,
+                        timestamp: savedMessage.created_at,
+                        file: message.file
+                    }
                 });
             }
-        });
-        // Also have the caller join the group voice channel immediately
-        socket.join(`group-voice-${groupId}`);
-        if (!rooms.has(`group-voice-${groupId}`)) rooms.set(`group-voice-${groupId}`, new Set());
-        rooms.get(`group-voice-${groupId}`).add(socket.id);
-    });
+            // Confirm to sender that message was sent
+            if (senderSocket) {
+                io.to(senderSocket.socket.id).emit('dm-sent', {
+                    receiverId: receiverId,
+                    message: {
+                        id: savedMessage.id,
+                        author: socket.user.username,
+                        avatar: socket.user.avatar,
+                        text: savedMessage.content,
+                        timestamp: savedMessage.created_at,
+                        file: message.file
+                    }
+                });
+            }
 
-    socket.on('accept-group-call', async (data) => {
-        const { groupId, from } = data;
-        console.log(`${from.username} accepted group call for group ${groupId}`);
-
-        const roomName = `group-voice-${groupId}`;
-        if (!rooms.has(roomName)) rooms.set(roomName, new Set());
-        rooms.get(roomName).add(socket.id);
-        socket.join(roomName);
-
-        socket.to(roomName).emit('user-joined-voice', {
-            socketId: socket.id,
-            userId: socket.userId,
-            username: from.username,
-            avatar: from.avatar
-        });
-    });
-
-    socket.on('reject-group-call', (data) => {
-        const { groupId, to, from, message } = data;
-        console.log(`${from.username} rejected group call for group ${groupId}, notifying ${to}`);
-        // Notify the caller that the call was rejected
-        io.to(to).emit('group-call-rejected', {
-            from: from.socketId,
-            message: message
-        });
-    });
-
-
-    // Direct message
-    socket.on('send-dm', async (data) => {
-        try {
-            const { receiverId, message } = data;
-            const sender = users.get(socket.id);
-
-            const savedMessage = await dmDB.create(
-                message.text,
-                socket.userId,
-                receiverId
-            );
-
-            const messagePayload = {
-                id: savedMessage.id,
-                author: sender.username,
-                avatar: sender.avatar,
-                text: message.text,
-                timestamp: new Date(),
-                file: message.file // Include file info if present
-            };
-
-            // Send to receiver
-            io.to(`user-${receiverId}`).emit('new-dm', {
-                senderId: socket.userId,
-                message: messagePayload
-            });
-            
-            // Send back to sender
-            socket.emit('dm-sent', {
-                receiverId,
-                message: messagePayload
-            });
         } catch (error) {
-            console.error('DM error:', error);
+            console.error('Error saving DM:', error);
         }
     });
 
-    // Add reaction
+    socket.on('send-group-message', async (data) => {
+        const { groupId, message } = data;
+        if (!groupId || !message || !message.text) return;
+
+        try {
+            const savedMessage = await groupDB.createMessage(message.text, groupId, socket.user.id);
+            // Attach file if present
+            if (message.file && message.file.id) {
+                // Update file record to link to this group message
+            }
+
+            // Get all members of the group
+            const groupMembers = await groupDB.getMembers(groupId);
+            
+            groupMembers.forEach(member => {
+                const memberSocket = Array.from(users.values()).find(u => u.id === member.id);
+                if (memberSocket) {
+                    io.to(memberSocket.socket.id).emit('new-group-message', {
+                        groupId: groupId,
+                        message: {
+                            id: savedMessage.id,
+                            author: socket.user.username,
+                            avatar: socket.user.avatar,
+                            text: savedMessage.content,
+                            timestamp: savedMessage.created_at,
+                            file: message.file
+                        }
+                    });
+                }
+            });
+
+        } catch (error) {
+            console.error('Error saving group message:', error);
+        }
+    });
+
     socket.on('add-reaction', async (data) => {
+        const { messageId, emoji } = data;
+        if (!messageId || !emoji) return;
         try {
-            const { messageId, emoji } = data;
-            await reactionDB.add(emoji, messageId, socket.userId);
-            
+            await reactionDB.add(emoji, messageId, socket.user.id);
             const reactions = await reactionDB.getByMessage(messageId);
-            io.emit('reaction-update', { messageId, reactions });
+            io.emit('reaction-update', { messageId, reactions }); // Emit to all clients
         } catch (error) {
-            console.error('Reaction error:', error);
+            console.error('Error adding reaction:', error);
         }
     });
 
-    // Remove reaction
     socket.on('remove-reaction', async (data) => {
+        const { messageId, emoji } = data;
+        if (!messageId || !emoji) return;
         try {
-            const { messageId, emoji } = data;
-            await reactionDB.remove(emoji, messageId, socket.userId);
-            
+            await reactionDB.remove(emoji, messageId, socket.user.id);
             const reactions = await reactionDB.getByMessage(messageId);
-            io.emit('reaction-update', { messageId, reactions });
+            io.emit('reaction-update', { messageId, reactions }); // Emit to all clients
         } catch (error) {
-            console.error('Reaction error:', error);
+            console.error('Error removing reaction:', error);
         }
     });
+    
+    // === Voice/Video Call Logic ===
+    socket.on('join-voice-channel', async (data) => {
+        const { channelName, userId, username, avatar, startTime } = data;
+        socket.join(channelName);
+        console.log(`${username} joined voice channel: ${channelName}`);
 
-    // Voice activity detection
-    socket.on('voice-activity', (data) => {
-        // Emit to all members in the same voice room
-        let currentVoiceRoom = null;
-        for (const [roomName, members] of rooms.entries()) {
-            if (members.has(socket.id) && roomName.startsWith('voice-') || roomName.startsWith('group-voice-')) {
-                currentVoiceRoom = roomName;
-                break;
+        // Store active call details if not already present
+        if (!activeCalls.has(channelName)) {
+            activeCalls.set(channelName, { startTime: startTime, type: 'server-voice', participants: new Map() });
+            
+            // Emit system message to the text channel if it's a new call
+            const channelId = getChannelIdByName(channelName);
+            if (channelId) {
+                const formattedStartTime = new Date(startTime).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+                io.emit('call-start-message', {
+                    targetType: 'server-voice',
+                    targetId: channelId,
+                    initiatorId: userId,
+                    message: `Голосовой звонок начался в ${formattedStartTime}`,
+                    timestamp: startTime
+                });
             }
         }
-        if (currentVoiceRoom) {
-            io.to(currentVoiceRoom).emit('user-speaking', {
-                socketId: socket.id,
-                speaking: data.speaking
-            });
-        }
-    });
+        activeCalls.get(channelName).participants.set(socket.id, { id: userId, username, avatar });
 
-    // Join voice channel (for server channels)
-    socket.on('join-voice-channel', (channelData) => {
-        const { channelName, userId, username, avatar } = channelData;
-        const roomName = `voice-${channelName}`;
-        
-        socket.join(roomName);
-        
-        if (!rooms.has(roomName)) {
-            rooms.set(roomName, new Set());
-        }
-        rooms.get(roomName).add(socket.id);
-        
-        socket.to(roomName).emit('user-joined-voice', {
-            userId,
-            socketId: socket.id,
-            username: username,
-            avatar: avatar
-        });
-        
-        const existingUsers = Array.from(rooms.get(roomName))
-            .filter(id => id !== socket.id)
-            .map(id => users.get(id));
-        
+        // Notify others in the channel
+        socket.to(channelName).emit('user-joined-voice', { socketId: socket.id, userId, username, avatar });
+
+        // Send existing users to the newly joined user
+        const existingUsers = Array.from(users.values())
+                                .filter(u => socket.rooms.has(channelName) && u.id !== userId)
+                                .map(u => ({ socketId: u.socket.id, id: u.id, username: u.username, avatar: u.avatar }));
         socket.emit('existing-voice-users', existingUsers);
+
+        // Update own user status if needed (e.g., "In Call")
+        userDB.updateStatus(userId, 'In Call');
     });
 
-    // WebRTC signaling
-    socket.on('offer', (data) => {
-        socket.to(data.to).emit('offer', {
-            offer: data.offer,
-            from: socket.id
-        });
-    });
-
-    socket.on('answer', (data) => {
-        socket.to(data.to).emit('answer', {
-            answer: data.answer,
-            from: socket.id
-        });
-    });
-
-    socket.on('ice-candidate', (data) => {
-        socket.to(data.to).emit('ice-candidate', {
-            candidate: data.candidate,
-            from: socket.id
-        });
-    });
-
-    socket.on('leave-voice-channel', (channelName) => {
-        const roomName = `voice-${channelName}`;
-        socket.leave(roomName);
+    socket.on('leave-voice-channel', async (channelName) => {
+        socket.leave(channelName);
+        console.log(`${socket.user.username} left voice channel: ${channelName}`);
         
-        if (rooms.has(roomName)) {
-            rooms.get(roomName).delete(socket.id);
-            io.to(roomName).emit('user-left-voice', socket.id);
+        // Remove from active call participants
+        if (activeCalls.has(channelName)) {
+            activeCalls.get(channelName).participants.delete(socket.id);
+            
+            // If no more participants, end the call and emit system message
+            if (activeCalls.get(channelName).participants.size === 0) {
+                const callDetails = activeCalls.get(channelName);
+                const endTime = new Date().toISOString();
+                const durationMs = new Date(endTime).getTime() - new Date(callDetails.startTime).getTime();
+                const durationMinutes = Math.floor(durationMs / 60000);
+                const durationSeconds = Math.floor((durationMs % 60000) / 1000);
+                
+                const channelId = getChannelIdByName(channelName);
+                if (channelId) {
+                    io.emit('call-end-message', {
+                        targetType: 'server-voice',
+                        targetId: channelId,
+                        initiatorId: socket.user.id,
+                        message: `Голосовой звонок завершился. Длительность: ${durationMinutes} минут ${durationSeconds} секунд.`,
+                        timestamp: endTime
+                    });
+                }
+                activeCalls.delete(channelName); // Remove call from active list
+            }
         }
+        
+        socket.to(channelName).emit('user-left-voice', socket.id);
+        // Update user status back to online (if not in other calls)
+        userDB.updateStatus(socket.user.id, 'Online');
     });
 
-    // Handle call initiation (DM)
-    socket.on('initiate-call', (data) => {
-        const { to, type, from } = data;
-        console.log(`Call initiated from ${from.username} to ${to}, type: ${type}`);
+    socket.on('initiate-call', async (data) => {
+        const { to, from, type, startTime } = data; // `from` includes caller's userId, username, socketId, avatar
+        const targetUserSocket = Array.from(users.values()).find(u => u.id === parseInt(to));
         
-        // Find receiver socket
-        const receiverSocketInfo = Array.from(users.values()).find(u => u.id === to);
-        if (receiverSocketInfo) {
-            // Send incoming call notification to receiver
-            io.to(`user-${to}`).emit('incoming-call', {
-                from: {
-                    id: from.id,
-                    username: from.username,
-                    socketId: socket.id,
-                    avatar: from.avatar
-                },
-                type: type
-            });
+        if (targetUserSocket) {
+            io.to(targetUserSocket.socket.id).emit('incoming-call', { from: from, type: type });
+            console.log(`Call initiated from ${from.username} to ${targetUserSocket.username}`);
+
+            // Store active DM call details
+            if (!activeCalls.has(`dm-${from.id}-${to}`)) { // Key could be sorted pair for uniqueness
+                 const dmKey = `${Math.min(from.id, to)}-${Math.max(from.id, to)}`;
+                 activeCalls.set(dmKey, { startTime: startTime, type: 'dm', initiatorId: from.id, participants: new Map() });
+                 activeCalls.get(dmKey).participants.set(from.socketId, { id: from.id, username: from.username, avatar: from.avatar });
+                 
+                 // Emit system message to the DM chat
+                 const formattedStartTime = new Date(startTime).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+                 io.to(from.socketId).emit('call-start-message', {
+                     targetType: 'dm',
+                     targetId: to, // Receiver's ID for sender
+                     initiatorId: from.id,
+                     message: `Звонок начался в ${formattedStartTime}`,
+                     timestamp: startTime
+                 });
+                 io.to(targetUserSocket.socket.id).emit('call-start-message', {
+                     targetType: 'dm',
+                     targetId: from.id, // Sender's ID for receiver
+                     initiatorId: from.id,
+                     message: `Звонок начался в ${formattedStartTime}`,
+                     timestamp: startTime
+                 });
+            }
         } else {
-            // User is offline
-            socket.emit('call-rejected', { message: 'Пользователь не в сети' });
+            console.log(`User ${to} not found for call`);
+            io.to(socket.id).emit('call-rejected', { message: 'Пользователь не в сети или не найден.' });
         }
     });
 
     socket.on('accept-call', (data) => {
-        const { to, from } = data;
-        console.log(`Call accepted by ${from.username}, connecting to ${to}`);
+        const { to, from, startTime } = data; // `from` is now the acceptor
+        const initiatorSocket = Array.from(users.values()).find(u => u.socket.id === to);
+        const acceptorSocket = Array.from(users.values()).find(u => u.socket.id === from.socketId);
         
-        // Notify the caller that call was accepted
-        io.to(to).emit('call-accepted', {
-            from: {
-                id: from.id,
-                username: from.username,
-                socketId: socket.id
-            }
-        });
-        // Also connect the accepter to the caller for direct WebRTC signaling
-        // Add accepter to a temporary DM voice room
-        const dmRoomName = `dm-voice-${Math.min(from.id, to)}-${Math.max(from.id, to)}`;
-        socket.join(dmRoomName);
-        if (!rooms.has(dmRoomName)) rooms.set(dmRoomName, new Set());
-        rooms.get(dmRoomName).add(socket.id);
+        if (initiatorSocket && acceptorSocket) {
+            io.to(initiatorSocket.socket.id).emit('call-accepted', { from: from });
+            io.to(acceptorSocket.socket.id).emit('call-accepted', { from: initiatorSocket.user }); // Send initiator's info back
+            console.log(`Call accepted by ${from.username}`);
 
-        io.to(dmRoomName).emit('user-joined-voice', {
-            socketId: socket.id,
-            userId: from.id,
-            username: from.username,
-            avatar: from.avatar
-        });
+            // Update active DM call details
+            const dmKey = `${Math.min(initiatorSocket.user.id, from.id)}-${Math.max(initiatorSocket.user.id, from.id)}`;
+            if (activeCalls.has(dmKey)) {
+                activeCalls.get(dmKey).participants.set(from.socketId, { id: from.id, username: from.username, avatar: from.avatar });
+            }
+        }
     });
 
     socket.on('reject-call', (data) => {
         const { to, message } = data;
-        console.log(`Call rejected by ${socket.userId}, notifying ${to}`);
-        
-        // Notify the caller that call was rejected
-        io.to(to).emit('call-rejected', {
-            from: socket.id,
-            message: message
-        });
-    });
-    
-    // Video toggle handler
-    socket.on('video-toggle', (data) => {
-        const { to, enabled } = data;
-        if (to) {
-            io.to(to).emit('video-toggle', {
-                from: socket.id,
-                enabled: enabled
+        const initiatorSocket = Array.from(users.values()).find(u => u.socket.id === to);
+        if (initiatorSocket) {
+            io.to(initiatorSocket.socket.id).emit('call-rejected', { message: message });
+            console.log(`Call rejected by ${socket.user.username}`);
+        }
+
+        // Clean up activeCalls for DM if the call was rejected
+        const dmKey1 = `${Math.min(socket.user.id, initiatorSocket.user.id)}-${Math.max(socket.user.id, initiatorSocket.user.id)}`;
+        const dmKey2 = `${Math.min(initiatorSocket.user.id, socket.user.id)}-${Math.max(initiatorSocket.user.id, socket.user.id)}`;
+
+        const callDetails = activeCalls.get(dmKey1) || activeCalls.get(dmKey2);
+        if (callDetails) {
+            const endTime = new Date().toISOString();
+            const durationMs = new Date(endTime).getTime() - new Date(callDetails.startTime).getTime();
+            const durationMinutes = Math.floor(durationMs / 60000);
+            const durationSeconds = Math.floor((durationMs % 60000) / 1000);
+
+            // Emit call-end-message to both participants
+            io.to(socket.id).emit('call-end-message', {
+                targetType: 'dm',
+                targetId: initiatorSocket.user.id,
+                initiatorId: socket.user.id,
+                message: `Звонок завершился. Длительность: ${durationMinutes} минут ${durationSeconds} секунд.`,
+                timestamp: endTime
             });
+            io.to(initiatorSocket.socket.id).emit('call-end-message', {
+                targetType: 'dm',
+                targetId: socket.user.id,
+                initiatorId: socket.user.id,
+                message: `Звонок завершился. Длительность: ${durationMinutes} минут ${durationSeconds} секунд.`,
+                timestamp: endTime
+            });
+            activeCalls.delete(dmKey1);
+            activeCalls.delete(dmKey2);
         }
-    });
-    
-    // End call
-    socket.on('end-call', (data) => {
-        const { to } = data; // 'to' is the peer's socketId
-        if (to) {
-            io.to(to).emit('call-ended', { from: socket.id });
-        }
-        // Remove from any temporary DM voice room
-        rooms.forEach((members, roomName) => {
-            if (members.has(socket.id) && roomName.startsWith('dm-voice-')) {
-                members.delete(socket.id);
-                io.to(roomName).emit('user-left-voice', socket.id);
-            }
-        });
     });
 
-    // Handle disconnection
-    socket.on('disconnect', async () => {
-        const user = users.get(socket.id);
-        
-        if (user) {
-            console.log(`${user.username} disconnected`);
-            
-            // Update status in database
-            try {
-                await userDB.updateStatus(socket.userId, 'Offline');
-            } catch (error) {
-                console.error('Error updating status:', error);
+    socket.on('end-call', (data) => {
+        const { to } = data; // ID of the other participant in the DM
+        const targetUserSocket = Array.from(users.values()).find(u => u.id === parseInt(to));
+
+        if (targetUserSocket) {
+            io.to(targetUserSocket.socket.id).emit('call-ended', { from: socket.id });
+            console.log(`Call ended by ${socket.user.username}`);
+        }
+        // Clean up activeCalls for DM
+        const dmKey = `${Math.min(socket.user.id, to)}-${Math.max(socket.user.id, to)}`;
+        const callDetails = activeCalls.get(dmKey);
+        if (callDetails) {
+            const endTime = new Date().toISOString();
+            const durationMs = new Date(endTime).getTime() - new Date(callDetails.startTime).getTime();
+            const durationMinutes = Math.floor(durationMs / 60000);
+            const durationSeconds = Math.floor((durationMs % 60000) / 1000);
+
+            // Emit call-end-message to both participants
+            io.to(socket.id).emit('call-end-message', {
+                targetType: 'dm',
+                targetId: to, // Receiver's ID for sender
+                initiatorId: socket.user.id,
+                message: `Звонок завершился. Длительность: ${durationMinutes} минут ${durationSeconds} секунд.`,
+                timestamp: endTime
+            });
+            if (targetUserSocket) {
+                io.to(targetUserSocket.socket.id).emit('call-end-message', {
+                    targetType: 'dm',
+                    targetId: socket.user.id, // Sender's ID for receiver
+                    initiatorId: socket.user.id,
+                    message: `Звонок завершился. Длительность: ${durationMinutes} минут ${durationSeconds} секунд.`,
+                    timestamp: endTime
+                });
             }
-            
-            rooms.forEach((members, roomName) => {
-                if (members.has(socket.id)) {
-                    members.delete(socket.id);
-                    // Differentiate between group/server voice and DM voice to emit to correct room
-                    if (roomName.startsWith('voice-') || roomName.startsWith('group-voice-')) {
-                        io.to(roomName).emit('user-left-voice', socket.id);
-                    } else if (roomName.startsWith('dm-voice-')) {
-                        io.to(roomName).emit('user-left-voice', socket.id);
-                    }
+            activeCalls.delete(dmKey);
+        }
+    });
+
+    socket.on('initiate-group-call', async (data) => {
+        const { groupId, callerInfo, type, startTime } = data;
+        
+        // Join the socket room for this group (caller joins)
+        socket.join(`group-${groupId}`);
+        console.log(`${callerInfo.username} initiated group call in group ${groupId}`);
+
+        // Store active group call details
+        if (!activeCalls.has(`group-${groupId}`)) {
+            activeCalls.set(`group-${groupId}`, { startTime: startTime, type: 'group', participants: new Map() });
+            // Emit system message to the group chat
+            const formattedStartTime = new Date(startTime).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+            // Get all group members and emit to them
+            const groupMembers = await groupDB.getMembers(groupId);
+            groupMembers.forEach(member => {
+                const memberSocket = Array.from(users.values()).find(u => u.id === member.id);
+                if (memberSocket) {
+                    io.to(memberSocket.socket.id).emit('call-start-message', {
+                        targetType: 'group',
+                        targetId: groupId,
+                        initiatorId: callerInfo.id,
+                        message: `Групповой звонок начался в ${formattedStartTime}`,
+                        timestamp: startTime
+                    });
                 }
             });
-            
-            users.delete(socket.id);
-            io.emit('user-list-update', Array.from(users.values()));
         }
+        activeCalls.get(`group-${groupId}`).participants.set(socket.id, { id: callerInfo.id, username: callerInfo.username, avatar: callerInfo.avatar });
+
+        // Notify ALL group members individually, because they might not be in the socket room yet
+        const groupMembers = await groupDB.getMembers(groupId);
+        groupMembers.forEach(member => {
+            // Do not send notification to the caller
+            if (member.id === callerInfo.id) return;
+
+            const memberSocket = Array.from(users.values()).find(u => u.id === member.id);
+            if (memberSocket) {
+                io.to(memberSocket.socket.id).emit('incoming-group-call', { groupId: groupId, callerInfo: callerInfo, type: type });
+            }
+        });
+
+        // Send existing voice users to the new caller
+        const existingVoiceUsers = Array.from(activeCalls.get(`group-${groupId}`).participants.values())
+            .filter(p => p.id !== callerInfo.id)
+            .map(p => ({ socketId: Array.from(users.values()).find(u => u.id === p.id)?.socket.id, id: p.id, username: p.username, avatar: p.avatar })); // Map back to socketId
+
+        if (existingVoiceUsers.length > 0) {
+            socket.emit('existing-voice-users', existingUsers);
+        }
+    });
+
+    socket.on('accept-group-call', async (data) => {
+        const { groupId, from, startTime } = data;
+        socket.join(`group-${groupId}`);
+        console.log(`${from.username} accepted group call in group ${groupId}`);
+
+        if (activeCalls.has(`group-${groupId}`)) {
+            activeCalls.get(`group-${groupId}`).participants.set(socket.id, { id: from.id, username: from.username, avatar: from.avatar });
+        }
+
+        // Notify all other members in the group
+        socket.to(`group-${groupId}`).emit('group-call-accepted', { groupId: groupId, from: from });
+
+        // Send existing voice users to the new joiner
+        const existingVoiceUsers = Array.from(activeCalls.get(`group-${groupId}`).participants.values())
+            .filter(p => p.id !== from.id)
+            .map(p => ({ socketId: Array.from(users.values()).find(u => u.id === p.id)?.socket.id, id: p.id, username: p.username, avatar: p.avatar }));
+        
+        if (existingVoiceUsers.length > 0) {
+            socket.emit('existing-voice-users', existingVoiceUsers);
+        }
+    });
+
+    socket.on('reject-group-call', async (data) => {
+        const { groupId, to, from, message } = data; // `from` is the rejector
+        // Notify the caller only
+        const callerSocket = Array.from(users.values()).find(u => u.socket.id === to);
+        if (callerSocket) {
+            io.to(callerSocket.socket.id).emit('group-call-rejected', { groupId: groupId, message: message });
+        }
+        console.log(`${from.username} rejected group call in group ${groupId}`);
+
+        // Clean up activeCalls for group if it was the last participant to reject/leave
+        if (activeCalls.has(`group-${groupId}`)) {
+            activeCalls.get(`group-${groupId}`).participants.delete(socket.id); // Remove rejector
+            if (activeCalls.get(`group-${groupId}`).participants.size === 0) {
+                const callDetails = activeCalls.get(`group-${groupId}`);
+                const endTime = new Date().toISOString();
+                const durationMs = new Date(endTime).getTime() - new Date(callDetails.startTime).getTime();
+                const durationMinutes = Math.floor(durationMs / 60000);
+                const durationSeconds = Math.floor((durationMs % 60000) / 1000);
+                
+                // Get all group members and emit to them
+                groupDB.getMembers(groupId).then(groupMembers => {
+                    groupMembers.forEach(member => {
+                        const memberSocket = Array.from(users.values()).find(u => u.id === member.id);
+                        if (memberSocket) {
+                            io.to(memberSocket.socket.id).emit('call-end-message', {
+                                targetType: 'group',
+                                targetId: groupId,
+                                initiatorId: from.id,
+                                message: `Групповой звонок завершился. Длительность: ${durationMinutes} минут ${durationSeconds} секунд.`,
+                                timestamp: endTime
+                            });
+                        }
+                    });
+                }).catch(err => console.error('Error getting group members on disconnect:', err));
+                activeCalls.delete(`group-${groupId}`); // Remove call from active list
+            }
+        }
+    });
+
+    socket.on('leave-group-voice', async (data) => {
+        const { groupId } = data;
+        socket.leave(`group-${groupId}`);
+        console.log(`${socket.user.username} left group voice in group ${groupId}`);
+        
+        // Remove from active call participants
+        if (activeCalls.has(`group-${groupId}`)) {
+            activeCalls.get(`group-${groupId}`).participants.delete(socket.id);
+            
+            // If no more participants, end the call and emit system message
+            if (activeCalls.get(`group-${groupId}`).participants.size === 0) {
+                const callDetails = activeCalls.get(`group-${groupId}`);
+                const endTime = new Date().toISOString();
+                const durationMs = new Date(endTime).getTime() - new Date(callDetails.startTime).getTime();
+                const durationMinutes = Math.floor(durationMs / 60000);
+                const durationSeconds = Math.floor((durationMs % 60000) / 1000);
+
+                // Get all group members and emit to them
+                groupDB.getMembers(groupId).then(groupMembers => {
+                    groupMembers.forEach(member => {
+                        const memberSocket = Array.from(users.values()).find(u => u.id === member.id);
+                        if (memberSocket) {
+                            io.to(memberSocket.socket.id).emit('call-end-message', {
+                                targetType: 'group',
+                                targetId: groupId,
+                                initiatorId: socket.user.id, // The one who left last
+                                message: `Групповой звонок завершился. Длительность: ${durationMinutes} минут ${durationSeconds} секунд.`,
+                                timestamp: endTime
+                            });
+                        }
+                    });
+                }).catch(err => console.error('Error getting group members on disconnect:', err));
+                activeCalls.delete(`group-${groupId}`); // Remove call from active list
+            }
+        }
+        
+        socket.to(`group-${groupId}`).emit('user-left-voice', socket.id);
+        userDB.updateStatus(socket.user.id, 'Online');
+    });
+
+    socket.on('offer', (data) => {
+        socket.to(data.to).emit('offer', { from: socket.id, offer: data.offer });
+    });
+
+    socket.on('answer', (data) => {
+        socket.to(data.to).emit('answer', { from: socket.id, answer: data.answer });
+    });
+
+    socket.on('ice-candidate', (data) => {
+        socket.to(data.to).emit('ice-candidate', { from: socket.id, candidate: data.candidate });
+    });
+    
+    socket.on('video-toggle', (data) => {
+        // Broadcast video toggle to others in the same voice channel or DM call
+        if (window.currentCallDetails?.groupId) { // Group call
+            socket.to(`group-${window.currentCallDetails.groupId}`).emit('video-toggle', { from: socket.id, enabled: data.enabled });
+        } else if (window.currentCallDetails?.friendId) { // DM call
+            const targetSocket = Array.from(users.values()).find(u => u.id === window.currentCallDetails.friendId);
+            if (targetSocket) {
+                io.to(targetSocket.socket.id).emit('video-toggle', { from: socket.id, enabled: data.enabled });
+            }
+        } else if (socket.rooms.size > 1) { // Assuming socket.rooms[0] is own socket.id
+            const voiceChannelRoom = Array.from(socket.rooms).find(room => room !== socket.id);
+            if (voiceChannelRoom) {
+                socket.to(voiceChannelRoom).emit('video-toggle', { from: socket.id, enabled: data.enabled });
+            }
+        }
+    });
+
+    socket.on('voice-activity', (data) => {
+        // Broadcast voice activity to others in the same voice channel or DM call
+        if (window.currentCallDetails?.groupId) { // Group call
+            socket.to(`group-${window.currentCallDetails.groupId}`).emit('user-speaking', { socketId: socket.id, speaking: data.speaking });
+        } else if (window.currentCallDetails?.friendId) { // DM call
+            const targetSocket = Array.from(users.values()).find(u => u.id === window.currentCallDetails.friendId);
+            if (targetSocket) {
+                io.to(targetSocket.socket.id).emit('user-speaking', { socketId: socket.id, speaking: data.speaking });
+            }
+        } else if (socket.rooms.size > 1) { // Assuming socket.rooms[0] is own socket.id
+            const voiceChannelRoom = Array.from(socket.rooms).find(room => room !== socket.id);
+            if (voiceChannelRoom) {
+                socket.to(voiceChannelRoom).emit('user-speaking', { socketId: socket.id, speaking: data.speaking });
+            }
+        }
+    });
+
+    socket.on('ping', (clientSendTime) => { // Server receives client's timestamp
+        socket.emit('pong', clientSendTime); // Server immediately echoes it back
+    });
+
+    socket.on('disconnect', () => {
+        console.log('User disconnected:', socket.user.username);
+        
+        // Remove user from the map
+        users.delete(socket.id);
+
+        // Update user status to offline
+        userDB.updateStatus(socket.user.id, 'Offline');
+        
+        // Notify all clients about updated user list
+        io.emit('user-list-update', Array.from(users.values()).map(u => ({ id: u.id, username: u.username, status: 'Online' })));
+        
+        // If user was in a voice channel, leave it
+        for (const room of socket.rooms) {
+            if (room.startsWith('group-')) {
+                const groupId = parseInt(room.substring(6));
+                // Clean up activeCalls for group
+                if (activeCalls.has(room)) {
+                    activeCalls.get(room).participants.delete(socket.id);
+                    if (activeCalls.get(room).participants.size === 0) {
+                        const callDetails = activeCalls.get(room);
+                        const endTime = new Date().toISOString();
+                        const durationMs = new Date(endTime).getTime() - new Date(callDetails.startTime).getTime();
+                        const durationMinutes = Math.floor(durationMs / 60000);
+                        const durationSeconds = Math.floor((durationMs % 60000) / 1000);
+                        
+                        // Get all group members and emit to them
+                        groupDB.getMembers(groupId).then(groupMembers => {
+                            groupMembers.forEach(member => {
+                                const memberSocket = Array.from(users.values()).find(u => u.id === member.id);
+                                if (memberSocket) {
+                                    io.to(memberSocket.socket.id).emit('call-end-message', {
+                                        targetType: 'group',
+                                        targetId: groupId,
+                                        initiatorId: socket.user.id,
+                                        message: `Групповой звонок завершился. Длительность: ${durationMinutes} минут ${durationSeconds} секунд.`,
+                                        timestamp: endTime
+                                    });
+                                }
+                            });
+                        }).catch(err => console.error('Error getting group members on disconnect:', err));
+                        activeCalls.delete(room);
+                    }
+                }
+                io.to(room).emit('user-left-voice', socket.id);
+            } else if (room !== socket.id) { // It's a server voice channel
+                // Clean up activeCalls for server voice channel
+                if (activeCalls.has(room)) {
+                    activeCalls.get(room).participants.delete(socket.id);
+                    if (activeCalls.get(room).participants.size === 0) {
+                        const callDetails = activeCalls.get(room);
+                        const endTime = new Date().toISOString();
+                        const durationMs = new Date(endTime).getTime() - new Date(callDetails.startTime).getTime();
+                        const durationMinutes = Math.floor(durationMs / 60000);
+                        const durationSeconds = Math.floor((durationMs % 60000) / 1000);
+                        
+                        // Emit to all users for a server channel
+                        const channelId = getChannelIdByName(room);
+                        if (channelId) {
+                            io.emit('call-end-message', {
+                                targetType: 'server-voice',
+                                targetId: channelId,
+                                initiatorId: socket.user.id,
+                                message: `Голосовой звонок завершился. Длительность: ${durationMinutes} минут ${durationSeconds} секунд.`,
+                                timestamp: endTime
+                            });
+                        }
+                        activeCalls.delete(room);
+                    }
+                }
+                io.to(room).emit('user-left-voice', socket.id);
+            }
+        }
+        
+        // Removed reference to client-side peerConnections variable.
+        // Server side does not maintain peer connections in the same way.
     });
 });
 
-// Start server
 server.listen(PORT, () => {
-    console.log(`Discord Clone server running on http://localhost:${PORT}`);
-    console.log(`Open http://localhost:${PORT}/login.html in your browser`);
+    console.log(`Server running on port ${PORT}`);
 });

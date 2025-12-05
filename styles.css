@@ -1,4 +1,5 @@
 
+
 * {
     margin: 0;
     padding: 0;
@@ -55,30 +56,32 @@ body {
     height: 8px; /* Smallest height for indicator */
     background-color: white;
     border-radius: 0 4px 4px 0;
-    transition: width 0.2s ease, height 0.2s ease;
+    transition: width 0.2s ease, height 0.2s ease, background-color 0.2s ease;
 }
 
 .server-icon:not(.home):hover::before {
     width: 8px; /* Visible on hover */
     height: 20px; /* Taller on hover */
+    background-color: #5865f2; /* Blue on hover */
 }
 
 .server-icon:not(.home).active::before {
     width: 8px; /* Visible when active */
     height: 40px; /* Full height when active */
+    background-color: white; /* White indicator when active */
 }
 
 /* Hover state for non-home server icons */
 .server-icon:not(.home):hover {
-    background-color: #5865f2; /* Discord purple on hover */
-    border-radius: 15px; /* Pill shape on hover */
-    color: #ffffff;
+    background-color: #36393f; /* Keep grey on hover, indicator changes */
+    border-radius: 50%; /* Keep circular */
+    color: #dcddde;
 }
 
 /* Active state for non-home server icons */
 .server-icon:not(.home).active {
     background-color: #5865f2; /* Discord purple when active */
-    border-radius: 15px; /* Pill shape when active */
+    border-radius: 50%; /* Keep circular */
     color: white;
 }
 
@@ -124,7 +127,7 @@ body {
     padding: 0 16px;
     border-bottom: 1px solid #202225;
     cursor: pointer;
-    transition: background-color 0.2s;
+    transition: background-color 0.2s ease;
     font-weight: 600;
     color: #ffffff; /* Ensure server name is white */
 }
@@ -191,7 +194,7 @@ body {
     font-weight: bold;
     padding: 4px;
     border-radius: 4px; /* Slight rounding for icon buttons */
-    transition: color 0.2s, background-color 0.2s;
+    transition: color 0.2s ease, background-color 0.2s ease;
 }
 
 .icon-btn-small:hover {
@@ -207,7 +210,7 @@ body {
     margin: 2px 0;
     border-radius: 4px;
     cursor: pointer;
-    transition: background-color 0.15s, color 0.15s;
+    transition: background-color 0.15s ease, color 0.15s ease;
     color: #8e9297; /* Default channel text color */
 }
 
@@ -238,18 +241,55 @@ body {
 
 /* User Panel Styles */
 .user-panel {
+    position: sticky; /* Keep at bottom of parent */
+    bottom: 0;
+    left: 0;
+    width: 100%;
     height: 52px;
     background-color: #292b2f; /* Darker grey for user panel */
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 0 8px;
+    z-index: 100; /* Ensure it stays above scrolling content */
 }
 
 .user-info {
     display: flex;
     align-items: center;
     gap: 8px;
+}
+
+.user-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background-color: #5865f2; /* Default purple */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    font-size: 14px;
+    color: white;
+    flex-shrink: 0;
+    background-size: cover;
+    background-position: center;
+}
+
+.user-details {
+    display: flex;
+    flex-direction: column;
+}
+
+.username {
+    font-size: 14px;
+    font-weight: 600;
+    color: #ffffff;
+}
+
+.user-status {
+    font-size: 12px;
+    color: #b9bbbe;
 }
 
 .user-controls {
@@ -268,7 +308,7 @@ body {
     justify-content: center;
     cursor: pointer;
     color: #b9bbbe; /* Light grey for icons */
-    transition: background-color 0.15s, color 0.15s;
+    transition: background-color 0.15s ease, color 0.15s ease;
     flex-shrink: 0;
 }
 
@@ -322,7 +362,7 @@ body {
     gap: 8px;
 }
 
-.icon-btn { /* For groupCallBtn, groupSettingsBtn */
+.icon-btn { /* For groupCallBtn, groupSettingsBtn, dmCallAudioBtn, dmCallVideoBtn */
     background: none;
     border: none;
     color: #b9bbbe;
@@ -331,7 +371,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: color 0.15s, background-color 0.15s;
+    transition: color 0.15s ease, background-color 0.15s ease;
     border-radius: 4px;
 }
 
@@ -357,7 +397,7 @@ body {
     font-weight: 500;
     padding: 8px 12px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: all 0.2s ease;
     border-bottom: 2px solid transparent;
 }
 
@@ -473,7 +513,7 @@ body {
     font-size: 12px;
     color: #dcddde;
     cursor: pointer;
-    transition: background-color 0.15s;
+    transition: background-color 0.15s ease;
     display: flex;
     align-items: center;
     gap: 4px;
@@ -498,7 +538,7 @@ body {
     color: #b9bbbe;
     cursor: pointer;
     font-size: 16px;
-    transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
 .message-group:hover .add-reaction-btn {
@@ -534,7 +574,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: color 0.2s;
+    transition: color 0.2s ease;
 }
 
 .attach-btn:hover, .emoji-btn:hover {
@@ -576,7 +616,7 @@ body {
     font-size: 20px;
     cursor: pointer;
     border-radius: 4px;
-    transition: background-color 0.15s;
+    transition: background-color 0.15s ease;
 }
 
 .emoji-option:hover {
@@ -616,7 +656,7 @@ body {
     padding: 6px 10px;
     border-radius: 3px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: all 0.2s ease;
 }
 
 .friends-tab:hover {
@@ -654,7 +694,7 @@ body {
     background-color: #36393f;
     padding: 10px 16px;
     border-radius: 4px;
-    transition: background-color 0.15s;
+    transition: background-color 0.15s ease;
     box-shadow: 0 1px 2px rgba(0,0,0,0.1);
 }
 
@@ -811,7 +851,7 @@ body {
     border-radius: 3px;
     color: #dcddde;
     font-size: 14px;
-    transition: border-color 0.2s;
+    transition: border-color 0.2s ease;
 }
 
 .add-friend-input-wrapper input:focus {
@@ -841,7 +881,7 @@ body {
     padding: 10px 16px;
     border-radius: 4px;
     margin-top: 8px;
-    transition: background-color 0.15s;
+    transition: background-color 0.15s ease;
 }
 
 .user-search-item:hover {
@@ -933,6 +973,7 @@ body {
     font-weight: 600;
     cursor: grab; /* Indicate draggable */
     position: relative;
+    transition: none; /* Disable transition during drag */
 }
 
 .close-call-btn {
@@ -941,7 +982,7 @@ body {
     font-size: 18px;
     color: #b9bbbe;
     cursor: pointer;
-    transition: color 0.2s;
+    transition: color 0.2s ease;
     padding: 4px;
     border-radius: 3px;
 }
@@ -1062,10 +1103,15 @@ body {
     align-items: center;
     justify-content: center;
     z-index: 1002;
+    opacity: 1; /* Default to visible for transition */
+    visibility: visible; /* Default to visible for transition */
+    transition: opacity 0.3s ease, visibility 0.3s ease;
 }
 
 .modal.hidden {
-    display: none;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none; /* Disable interaction when hidden */
 }
 
 .modal-content {
@@ -1075,6 +1121,7 @@ body {
     max-width: 500px;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
     overflow: hidden;
+    position: relative; /* Needed for dragging */
 }
 
 .modal-header {
@@ -1084,6 +1131,7 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    cursor: default; /* Default cursor for headers, changed to grab for bot modal */
 }
 
 .modal-header h2 {
@@ -1098,7 +1146,7 @@ body {
     font-size: 24px;
     color: #b9bbbe;
     cursor: pointer;
-    transition: color 0.2s;
+    transition: color 0.2s ease;
 }
 
 .close-modal-btn:hover {
@@ -1130,7 +1178,7 @@ body {
     border-radius: 3px;
     color: #dcddde;
     font-size: 14px;
-    transition: border-color 0.2s;
+    transition: border-color 0.2s ease;
 }
 
 .form-group input:focus {
@@ -1155,7 +1203,7 @@ body {
     background-color: #36393f;
     border-radius: 4px;
     cursor: pointer;
-    transition: background-color 0.15s;
+    transition: background-color 0.15s ease;
 }
 .friend-select-item:last-child {
     margin-bottom: 0;
@@ -1189,7 +1237,7 @@ body {
     justify-content: center;
     flex-shrink: 0;
     position: relative;
-    transition: all 0.15s;
+    transition: all 0.15s ease;
 }
 
 .checkbox::after {
@@ -1202,7 +1250,6 @@ body {
 .friend-select-item.selected .checkbox::after {
     display: block;
 }
-
 
 .friend-select-avatar {
     width: 24px;
@@ -1506,7 +1553,7 @@ body {
     background-color: #36393f;
     border-radius: 4px;
     cursor: pointer;
-    transition: background-color 0.15s;
+    transition: background-color 0.15s ease;
 }
 .friend-select-item:last-child {
     margin-bottom: 0;
@@ -1540,7 +1587,7 @@ body {
     justify-content: center;
     flex-shrink: 0;
     position: relative;
-    transition: all 0.15s;
+    transition: all 0.15s ease;
 }
 
 .checkbox::after {
@@ -1572,4 +1619,148 @@ body {
     width: 24px;
     height: 24px;
     margin-right: 10px;
+}
+
+/* Specific styles for DM list and search bar in friends view */
+.dm-list-view {
+    flex: 1; /* Allow to grow */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.dm-search-bar {
+    padding: 8px 16px; /* Padding consistent with Discord UI */
+    background-color: #2f3136; /* Match sidebar background */
+    border-bottom: 1px solid #202225;
+}
+
+.dm-search-bar input {
+    width: 100%;
+    padding: 6px 8px; /* Smaller padding for search bar */
+    background-color: #202225; /* Darker background for input field */
+    border: none; /* No border for the input itself */
+    border-radius: 4px; /* Slightly rounded corners */
+    color: #dcddde;
+    font-size: 14px;
+    outline: none;
+    font-family: 'Whitney', 'Helvetica Neue', Helvetica, Arial, sans-serif; /* Discord font */
+}
+
+.dm-search-bar input::placeholder {
+    color: #72767d; /* Lighter placeholder text */
+    font-family: 'Whitney', 'Helvetica Neue', Helvetica, Arial, sans-serif; /* Discord font */
+}
+
+.dm-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0; /* Vertical padding only */
+}
+
+.dm-list .channel {
+    padding: 6px 16px; /* Adjust padding for DM list items */
+}
+
+.dm-list .channel .friend-avatar, .dm-list .channel .friend-avatar-img {
+    margin-right: 8px; /* Consistent spacing for DM avatars */
+}
+
+.dm-list .empty-dm-list {
+    color: #72767d;
+    text-align: center;
+    padding: 20px;
+    font-size: 14px;
+}
+
+.dm-list .channel-category {
+    margin-bottom: 0; /* Remove extra margin */
+}
+
+/* Bot Interaction FAB */
+.bot-fab {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 56px;
+    height: 56px;
+    background-color: #5865f2;
+    border-radius: 50%;
+    border: none;
+    color: white;
+    font-size: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    z-index: 1001;
+    transition: background-color 0.2s ease, transform 0.2s ease;
+}
+
+.bot-fab:hover {
+    background-color: #4752c4;
+    transform: translateY(-2px);
+}
+
+/* Bot Interaction Modal - Square and smaller */
+#botInteractionModal .modal-content {
+    max-width: 350px; /* Smaller width */
+    width: 350px; /* Fixed width */
+    height: auto; /* Auto height */
+    aspect-ratio: 1 / 1; /* Make it square-ish (will stretch if content is too large) */
+    position: absolute; /* Allows manual positioning and dragging */
+}
+
+#botInteractionModal .modal-header {
+    cursor: grab; /* Indicate draggable */
+    transition: none; /* Disable transition during drag */
+}
+
+.bot-actions-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 0;
+}
+
+.bot-action-btn {
+    background-color: #40444b; /* Background color like site buttons */
+    color: #dcddde;
+    padding: 12px 15px;
+    border-radius: 3px;
+    font-weight: 500;
+    font-size: 15px;
+    border: none;
+    cursor: pointer;
+    width: 100%;
+    text-align: left;
+    transition: background-color 0.2s ease, color 0.2s ease; /* Smooth transitions */
+}
+
+.bot-action-btn:hover {
+    background-color: #5865f2; /* Discord blue on hover */
+    color: white;
+}
+
+/* Temporary message for audio unlock */
+.temporary-message {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: rgba(49, 138, 77, 0.9); /* Greenish for success */
+    color: white;
+    padding: 10px 15px;
+    border-radius: 5px;
+    font-size: 14px;
+    z-index: 2000;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.5s ease-out, visibility 0.5s ease-out;
+}
+
+.temporary-message.show {
+    opacity: 1;
+    visibility: visible;
 }
